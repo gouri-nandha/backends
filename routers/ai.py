@@ -1,0 +1,262 @@
+import os
+import json
+from typing import Literal
+
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from google import genai
+from google.genai import types
+
+from dependencies import get_current_user
+load_dotenv()
+
+router = APIRouter(prefix="/ai", tags=["AI"])
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY is not set in .env")
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL_NAME = "gemini-2.0-flash"
+
+GENERATION_CONFIG = types.GenerateContentConfig(
+    temperature=0.7,
+    max_output_tokens=512,
+)
+
+SYSTEM_CONTEXT = (
+    "You are a helpful Python programming assistant for college students. "
+    "Answer questions about Python, web development, and AI. "
+    "Keep responses under 200 words unless more detail is truly needed."
+)
+chat_sessions: dict[int, object] = {}
+
+
+def get_or_create_session(user_id: int):
+    if user_id not in chat_sessions:
+        chat_sessions[user_id] = client.chats.create(
+            model=MODEL_NAME,
+            history=[
+                {
+                    "role": "user",
+                    "parts": [{"text": SYSTEM_CONTEXT}],
+                },
+                {
+                    "role": "model",
+                    "parts": [{"text": "Understood. Ready to help."}],
+                },
+            ],
+        )
+
+    return chat_sessions[user_id]
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+@router.post("/chat", response_model=ChatResponse)
+def chat_with_ai(
+    request: ChatRequest,
+    current_user=Depends(get_current_user),
+):
+    session = get_or_create_session(current_user.id)
+
+    try:
+        response = session.send_message(request.message)
+
+        return ChatResponse(
+            reply=response.text.strip()
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Message could not be processed. Try rephrasing."
+        )
+
+    except Exception as exc:
+        print(f"[chat] Gemini error: {exc}")
+
+        raise HTTPException(
+            status_code=503,
+            detail="AI service unavailable."
+        )
+
+@router.delete("/chat/reset", status_code=204)
+def reset_chat(current_user=Depends(get_current_user)):
+    chat_sessions.pop(current_user.id, None)
+
+    return Response(status_code=204)
+
+
+class SummariseRequest(BaseModel):
+    text: str = Field(min_length=20, max_length=5000)
+    max_words: int = Field(default=150, ge=30, le=500)
+
+
+class SummariseResponse(BaseModel):
+    summary: str
+
+
+@router.post("/summarize", response_model=SummariseResponse)
+def summarize_text(
+    request: SummariseRequest,
+    current_user=Depends(get_current_user),
+):
+    prompt = (
+        f"Summarise the following text in no more than "
+        f"{request.max_words} words. "
+        f"Return only the summary.\n\n"
+        f"TEXT:\n{request.text}"
+    )
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=600,
+            ),
+        )
+
+        return SummariseResponse(
+            summary=response.text.strip()
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Content could not be processed."
+        )
+
+    except Exception as exc:
+        print(f"[summarize] Gemini error: {exc}")
+
+        raise HTTPException(
+            status_code=503,
+            detail="AI service unavailable."
+        )
+class ExplainRequest(BaseModel):
+    topic: str = Field(min_length=2, max_length=300)
+    level: Literal["beginner", "intermediate", "expert"] = "beginner"
+
+
+class ExplainResponse(BaseModel):
+    explanation: str
+
+
+LEVEL_PERSONAS = {
+    "beginner": "a school student who has never programmed before",
+    "intermediate": "a college student who knows Python basics",
+    "expert": "a senior software engineer who wants implementation details",
+}
+
+
+@router.post("/explain", response_model=ExplainResponse)
+def explain_topic(
+    request: ExplainRequest,
+    current_user=Depends(get_current_user),
+):
+    persona = LEVEL_PERSONAS[request.level]
+
+    prompt = (
+        f"Explain the following to {persona}.\n"
+        f"Include a real-world analogy.\n"
+        f"If relevant, add a short Python example "
+        f"(maximum 5 lines).\n"
+        f"Keep the explanation under 200 words.\n\n"
+        f"TOPIC: {request.topic}"
+    )
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=GENERATION_CONFIG,
+        )
+
+        return ExplainResponse(
+            explanation=response.text.strip()
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Content could not be processed."
+        )
+
+    except Exception as exc:
+        print(f"[explain] Gemini error: {exc}")
+
+        raise HTTPException(
+            status_code=503,
+            detail="AI service unavailable."
+        )
+
+class StreamRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+
+
+def stream_chat_response(user_id: int, message: str):
+    """
+    Streams Gemini responses using Server-Sent Events (SSE).
+    """
+
+    session = get_or_create_session(user_id)
+
+    try:
+        for chunk in session.send_message_stream(message):
+
+            if chunk.text:
+                data = json.dumps({
+                    "chunk": chunk.text
+                })
+
+                yield f"data: {data}\n\n"
+
+        yield "data: [Done]\n\n"
+
+    except ValueError:
+        error = json.dumps({
+            "error": "Content blocked. Try rephrasing."
+        })
+
+        yield f"data: {error}\n\n"
+        yield "data: [Done]\n\n"
+
+    except Exception as exc:
+        print(f"[stream] Gemini error: {exc}")
+
+        error = json.dumps({
+            "error": "AI service unavailable."
+        })
+
+        yield f"data: {error}\n\n"
+        yield "data: [Done]\n\n"
+
+
+@router.post("/stream")
+def stream_ai_response(
+    request: StreamRequest,
+    current_user=Depends(get_current_user),
+):
+    return StreamingResponse(
+        stream_chat_response(
+            current_user.id,
+            request.message
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
