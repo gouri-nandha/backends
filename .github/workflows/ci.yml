@@ -29,4 +29,4 @@ jobs:
           python -m pytest tests/ -v
         env:
           SECRET_KEY: test-secret-key-for-ci-only-not-production
-          GEMINI_API_KEY: dummy-key-not-used-in-tests}
+          GEMINI_API_KEY: dummy-key-not-used-in-tests
