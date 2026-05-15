@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 fastapi
 uvicorn[standard]
 sqlalchemy
@@ -7,12 +7,6 @@ passlib==1.7.4
 bcrypt==4.0.1
 python-multipart
 google-genai
-=======
-fastapi
-uvicorn
-sqlalchemy
-passlib[bcrypt]
-python-jose[cryptography]
-bcrypt==4.0.1
->>>>>>> ba2120569e916a8bcd6060f3a5dfc0313351d556
 python-dotenv
+httpx
+pytest
