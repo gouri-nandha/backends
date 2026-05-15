@@ -1,5 +1,5 @@
 .env
-.test_kuppam.db
+test_kuppam.db
 __pycache__
 kuppam.db
 .pytest_cache
