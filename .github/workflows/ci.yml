@@ -18,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
@@ -28,5 +28,5 @@ jobs:
         run: |
           python -m pytest tests/ -v
         env:
-          SECRET_KEY: test-secret-key-for-ci-only-not-production
-          GEMINI_API_KEY: dummy-key-not-used-in-tests
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
